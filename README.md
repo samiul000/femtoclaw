@@ -1,7 +1,7 @@
 # FemtoClaw : MCU AI Assistant with Telegram & Discord
 
 <p align="center">
-  <img src="assets/FemtoClaw_logo.png" alt="FemtoClaw" width="300" />
+  <img src="assets/femtoclaw_logo.png" alt="FemtoClaw" width="300" />
 </p>
 
 Ultra-lightweight MCU port of [PicoClaw](https://github.com/sipeed/picoclaw) for
