@@ -38,6 +38,7 @@ pip install esptool            # Flash ESP32 boards
 ## Demos
 
 <https://github.com/user-attachments/assets/e881f5f5-d829-4c6f-b895-254bb5adc508>
+<https://youtube.com/shorts/vIlKrQSQUu8?feature=share>
 
 ---
 
