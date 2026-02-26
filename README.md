@@ -1,12 +1,26 @@
-# FemtoClaw : MCU AI Assistant with Telegram & Discord
+<div align="center">
+<h1>FemtoClaw : MCU AI Assistant with Telegram & Discord</h1>
 
 <p align="center">
   <img src="assets/femtoclaw_logo.png" alt="FemtoClaw" width="300" />
 </p>
 
-Ultra-lightweight MCU port of [PicoClaw](https://github.com/sipeed/picoclaw) for
-WiFi-capable boards (ESP32, Pico W), with a Python GUI that handles everything
-compiling the firmware, flashing it and running a live terminal "all in one app".
+<h3>
+  Ultra-lightweight MCU port of 
+  <a href="https://github.com/sipeed/picoclaw">PicoClaw</a>
+  for WiFi-capable boards (ESP32, Pico W), with a Python GUI that handles
+  compiling the firmware, flashing it, and running a live terminal,
+  "all in one app".
+</h3>
+
+<p>
+<img src="https://img.shields.io/badge/C%2B%2B-17%2B-00599C?style=flat&logo=c%2B%2B&logoColor=white" alt="C++">
+<img src = https://img.shields.io/badge/Arch-ARM%20%7C%20AVR%20%7C%20RISC--V-blue alt="Hardware">
+<img src="https://img.shields.io/badge/License-Apache%202.0-blue" alt="License">
+<br>
+    <a href="https://femtoclaw-web.vercel.app/"><img src="https://img.shields.io/badge/Website-femtoclaw-red?style=flat&logo=google-chrome&logoColor=white" alt="Website"></a>
+</p>
+</div>
 
 ---
 
