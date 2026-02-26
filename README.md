@@ -39,7 +39,8 @@ pip install esptool            # Flash ESP32 boards
 
 <https://github.com/user-attachments/assets/e881f5f5-d829-4c6f-b895-254bb5adc508>
 
-[![Telegram demo](https://youtube.com/shorts/vIlKrQSQUu8?feature=share)
+### Telegram Demo
+[![Telegram demo](assets/telegram_demo.png)](https://youtube.com/shorts/vIlKrQSQUu8?feature=share)
 
 ---
 
