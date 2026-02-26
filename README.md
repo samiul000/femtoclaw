@@ -16,7 +16,7 @@ compiling the firmware, flashing it and running a live terminal "all in one app"
 | ------------------- | ----------------------------------------------------------------------- |
 | `femtoclaw_mcu.cpp` | C++ firmware for ESP32 / ESP32-C3 / Pico W                              |
 | `platformio.ini`    | PlatformIO multi-board build config (auto-generated if missing)         |
-| `femtoclaw.py`      | **PyQt6 GUI** with real transparency — compile, flash, terminal, config |
+| `femtoclaw.py`      | **PyQt6 GUI** — compile, flash, terminal, config |
 
 ---
 
