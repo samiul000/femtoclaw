@@ -4,7 +4,7 @@
 
 **Owner: Al Mahmud Samiul**
 
-Last Updated: [Date]
+Last Updated: 26.02.2026
 
 ---
 ### 1. Scope
@@ -68,4 +68,5 @@ You may redistribute unmodified versions using the Project name, provided:
 ***Unauthorized trademark use may result in:***
 
 - Revocation of trademark permissions.
+
 - Legal enforcement under applicable trademark law.
