@@ -47,11 +47,11 @@ pip install esptool            # Flash ESP32 boards
 ## Quick Start
 1. Clone the project
 ```bash
-git clone 
+git clone https://github.com/samiul000/femtoclaw.git
 ```
 2. Go to the main folder
 ```bash
-cd 
+cd femtoclaw-main/main/
 ```
 3. Run
 ```bash
