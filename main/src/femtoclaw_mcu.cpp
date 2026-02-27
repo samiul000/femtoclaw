@@ -522,6 +522,7 @@ static void tls_set_insecure(WiFiClientSecure &tls) {
 */
 static inline void usb_keepalive(unsigned long &last_ms) {
 #if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+  if (g_http_busy) return; // prevent null bytes injection during response streaming
   unsigned long now = millis();
   if (now - last_ms >= 200) {
     last_ms = now;
