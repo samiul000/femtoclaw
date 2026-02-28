@@ -461,7 +461,7 @@ FemtoClaw uses a **partial update (merge)** system, NOT full replacement:
 ✅ **Changes persist immediately** (survives reboot)  
 ❌ **NOT a full rewrite** — old values persist unless explicitly overwritten
 
-**_Note_** : _Read CONFIG.md for more information._
+***Note*** : Read [CONFIG.md](CONFIG.md) for more information.
 
 **Example:**
 
