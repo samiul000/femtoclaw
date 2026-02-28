@@ -42,7 +42,7 @@
   #include <LittleFS.h>
   #define PLATFORM_NAME "Pico W"
   #define PERSIST_IMPL 2
-  //namespace rp2040 { extern void reboot(); }
+  // namespace rp2040 { extern void reboot(); }
 #endif
 
 // ─── Config constants ────────────────────────────────────────────────────────
@@ -64,13 +64,14 @@ static constexpr uint32_t TG_POLL_MS        = 5000;
 static constexpr uint32_t DC_POLL_MS        = 5000;
 static constexpr uint16_t TG_MSG_CHUNK      = 3800;
 static constexpr uint16_t DC_MSG_CHUNK      = 1800;
-static constexpr uint16_t TLS_SETTLE_MS     = 20;
+static constexpr uint16_t TLS_SETTLE_MS     = 100;
 static constexpr uint16_t CHUNK             = 512;
 static constexpr uint16_t CFG_S             = 128;
+static constexpr uint16_t LLM_KEY           = 256;
 static constexpr uint16_t RESP_S            = 2048;
 static constexpr uint16_t PROMPT_S          = 1024;
 static constexpr uint16_t JSON_OUT_S        = 4096;
-static constexpr uint16_t HTTP_RESP_S       = 8192;  // raised if needed but not recommended for long OpenRouter responses + headers
+static constexpr uint16_t HTTP_RESP_S       = 8192;  // raised if needed but not recommended for long responses + headers
 static constexpr uint16_t CMD_S             = 256;
 static constexpr uint16_t SESSION_S         = 4096;
 static constexpr uint8_t  ALLOW_LIST_MAX    = 8;
@@ -98,7 +99,7 @@ struct Config {
   char wifi_ssid[CFG_S];
   char wifi_pass[CFG_S];
   char llm_provider[32];
-  char llm_api_key[CFG_S];
+  char llm_api_key[LLM_KEY];
   char llm_api_base[CFG_S];
   char llm_model[64];
   uint16_t max_tokens;
@@ -303,7 +304,7 @@ static void cfg_load() {
   prefs.getString("wifi_ssid",     g_cfg.wifi_ssid,        CFG_S);
   prefs.getString("wifi_pass",     g_cfg.wifi_pass,        CFG_S);
   prefs.getString("llm_provider",  g_cfg.llm_provider,     32);
-  prefs.getString("llm_api_key",   g_cfg.llm_api_key,      CFG_S);
+  prefs.getString("llm_api_key",   g_cfg.llm_api_key,      LLM_KEY);
   prefs.getString("llm_api_base",  g_cfg.llm_api_base,     CFG_S);
   prefs.getString("llm_model",     g_cfg.llm_model,        64);
   g_cfg.max_tokens     = prefs.getUShort("max_tokens",     g_cfg.max_tokens);
@@ -417,7 +418,7 @@ static void cfg_load() {
   if ((v=jfind(jbuf,"wifi_ssid")))      jstr(v, g_cfg.wifi_ssid,        CFG_S);
   if ((v=jfind(jbuf,"wifi_pass")))      jstr(v, g_cfg.wifi_pass,        CFG_S);
   if ((v=jfind(jbuf,"llm_provider")))   jstr(v, g_cfg.llm_provider,     32);
-  if ((v=jfind(jbuf,"llm_api_key")))    jstr(v, g_cfg.llm_api_key,      CFG_S);
+  if ((v=jfind(jbuf,"llm_api_key")))    jstr(v, g_cfg.llm_api_key,      LLM_KEY);
   if ((v=jfind(jbuf,"llm_api_base")))   jstr(v, g_cfg.llm_api_base,     CFG_S);
   if ((v=jfind(jbuf,"llm_model")))      jstr(v, g_cfg.llm_model,        64);
   if ((v=jfind(jbuf,"max_tokens")))     g_cfg.max_tokens     = (uint16_t)jint(v);
@@ -522,7 +523,7 @@ static void tls_set_insecure(WiFiClientSecure &tls) {
 */
 static inline void usb_keepalive(unsigned long &last_ms) {
 #if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
-  if (g_http_busy) return; // prevent null bytes injection during response streaming
+  if (g_http_busy) return; // don't inject null bytes during response streaming
   unsigned long now = millis();
   if (now - last_ms >= 200) {
     last_ms = now;
@@ -731,7 +732,7 @@ static int16_t https_req(WiFiClientSecure &tls,
    failures and USB-CDC crashes. The 30ms settle gives lwIP time to free FDs.
   */
   tls.stop();
-  delay(100);
+  delay(TLS_SETTLE_MS);
   tls_set_insecure(tls);
   tls.setTimeout(HTTP_TIMEOUT_MS);
 
@@ -809,7 +810,7 @@ static int16_t http_req(const char *host_port, const char *path,
 // ─── Shared TX buffers ────────────────────────────────────────────────────────
 static char g_tx_body[JSON_OUT_S];
 static char g_tx_esc[JSON_OUT_S];
-static char g_tx_auth[CFG_S + 32];
+static char g_tx_auth[LLM_KEY + 32];
 static char g_tx_path[CFG_S];
 
 // ─── LLM chat ────────────────────────────────────────────────────────────────
@@ -856,6 +857,12 @@ static bool llm_chat(const char *user_prompt, char *out, uint16_t out_cap) {
   pos += snprintf(g_tx_body+pos, JSON_OUT_S-pos,
     "%s{\"role\":\"user\",\"content\":\"%s\"}]}", first?"":",", g_tx_esc);
 
+  if (pos >= JSON_OUT_S || g_tx_body[JSON_OUT_S-1] != '\0') {
+    session_clear();
+    snprintf(out, out_cap, "[session overflow — cleared, retry]");
+    return false;
+  }
+
   char host[CFG_S];  // local — llm_chat is always called under g_http_busy, but static is unnecessary
   snprintf(g_tx_auth, sizeof(g_tx_auth), "Authorization: Bearer %s\r\n", g_cfg.llm_api_key);
   const char *hs = strstr(g_cfg.llm_api_base, "://");
@@ -870,8 +877,18 @@ static bool llm_chat(const char *user_prompt, char *out, uint16_t out_cap) {
 
   #ifdef BOARD_ESP32
     Serial.printf("[LLM] free_heap=%lu bytes\r\n", (unsigned long)ESP.getFreeHeap());
+    if (ESP.getFreeHeap() < 120000) {
+        Serial.println("[WARN] Heap critically low — rebooting to prevent crash");
+        delay(200);
+        ESP.restart();
+    }
   #elif defined(BOARD_PICO_W)
     Serial.printf("[LLM] free_heap=%lu bytes\r\n", (unsigned long)rp2040.getFreeHeap());
+    if (rp2040.getFreeHeap() < 120000) {
+        Serial.println("[WARN] Heap critically low — rebooting to prevent crash");
+        delay(200);
+        rp2040.reboot();
+    }
   #endif
 
   g_http_busy = true;
@@ -958,12 +975,12 @@ static void tool_dispatch(const char *name, const char *args) {
   } else if (!strcmp(name,"get_time")) {
     snprintf(g_tool_result,512,"{\"uptime_ms\":%lu}",millis());
   } else if (!strcmp(name,"set_config")) {
-    char key[48]={0}, val[CFG_S]={0};
+    char key[48]={0}, val[LLM_KEY]={0};
     const char *kp=jfind(args,"key"), *vp=jfind(args,"value");
     if (kp) jstr(kp,key,48);
-    if (vp) jstr(vp,val,CFG_S);
+    if (vp) jstr(vp,val,LLM_KEY);
     if      (!strcmp(key,"llm_model"))      strlcpy(g_cfg.llm_model,val,64);
-    else if (!strcmp(key,"llm_api_key"))    strlcpy(g_cfg.llm_api_key,val,CFG_S);
+    else if (!strcmp(key,"llm_api_key"))    strlcpy(g_cfg.llm_api_key,val,LLM_KEY);
     else if (!strcmp(key,"llm_api_base"))   strlcpy(g_cfg.llm_api_base,val,CFG_S);
     else if (!strcmp(key,"llm_provider"))   strlcpy(g_cfg.llm_provider,val,32);
     else if (!strcmp(key,"wifi_ssid"))      strlcpy(g_cfg.wifi_ssid,val,CFG_S);
@@ -1267,6 +1284,7 @@ static void dc_poll() {
 static uint32_t g_hb_last = 0;
 
 static void heartbeat_check() {
+  if (!g_cfg.heartbeat_ms) return;
   if ((millis() - g_hb_last) < g_cfg.heartbeat_ms) return;
   g_hb_last = millis();
 
@@ -1277,6 +1295,7 @@ static void heartbeat_check() {
   }
 
   Serial.println("[heartbeat] Running...");
+  session_clear();
   const char *r = agent_run(
     "You are a scheduled heartbeat on an MCU. Report uptime and WiFi status in one short sentence.");
   Serial.printf("[heartbeat] %s\r\n", r);
@@ -1350,7 +1369,7 @@ static void shell_run(const char *line) {
     char *rest=(char*)line+4, *sp=strchr(rest,' ');
     if (!sp) { Serial.println("Usage: set <key> <value>"); return; }
     *sp='\0';
-    static char args[CFG_S+64];
+    static char args[LLM_KEY+64];
     snprintf(args,sizeof(args),"{\"key\":\"%s\",\"value\":\"%s\"}",rest,sp+1);
     tool_dispatch("set_config",args);
     Serial.println(g_tool_result);
@@ -1542,7 +1561,7 @@ void setup() {
     "  ██║     ███████╗██║ ╚═╝ ██║   ██║   ╚██████╔╝╚██████╗███████╗██║  ██║╚███╔███╔╝\r\n"
     "  ╚═╝     ╚══════╝╚═╝     ╚═╝   ╚═╝    ╚═════╝  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝\r\n"
     "\033[0m"
-    "  FemtoClaw v29 — AI Assistant for MCU · " PLATFORM_NAME " · Telegram & Discord\r\n"
+    "  FemtoClaw AI Assistant for MCU · " PLATFORM_NAME " · Telegram & Discord\r\n"
     "  Developed by: Al Mahmud Samiul\r\n"
     "  Type 'help' for commands.\r\n");
 
