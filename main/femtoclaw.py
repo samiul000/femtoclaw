@@ -59,7 +59,7 @@ def _scripts_dirs() -> list[str]:
     venv = os.environ.get("VIRTUAL_ENV") or os.environ.get("CONDA_PREFIX")
     if venv:
         dirs.append(os.path.join(venv, "Scripts"))   # Windows
-        dirs.append(os.path.join(venv, "bin"))        # macOS / Linux
+        dirs.append(os.path.join(venv, "bin"))       # macOS / Linux
 
     # 4. pipx installs and common user-level locations
     home = os.path.expanduser("~")
@@ -365,6 +365,7 @@ class CompileSignals(QObject):
     """Signals emitted from the compile/flash background threads."""
     progress_show  = pyqtSignal(bool, str)
     progress_pct   = pyqtSignal(int, str)
+    compile_btn_state = pyqtSignal(bool)   # True = compiling, False = idle
 
 class SerialReader(QThread):
     def __init__(self, ser):
@@ -430,8 +431,11 @@ class FemtoClawApp(QMainWindow):
         self._ser: serial.Serial | None = None
         self._reader: SerialReader | None = None
         self._connected = False
+        self._connected_port = ""          # track which port is open
         self._flashing = False
         self._compiling = False
+        self._cancel_compile = False       # set True to abort compile
+        self._compile_proc = None          # subprocess.Popen reference
         self._fw_path = ""
         self._cpp_path = ""
         self._history: list[str] = []
@@ -454,6 +458,7 @@ class FemtoClawApp(QMainWindow):
         self._csig = CompileSignals()
         self._csig.progress_show.connect(self._set_compile_prog)
         self._csig.progress_pct.connect(self._show_flash_prog)
+        self._csig.compile_btn_state.connect(self._set_compile_btn)
 
         self._build_ui()
         self._refresh_ports()
@@ -579,7 +584,7 @@ class FemtoClawApp(QMainWindow):
         btn_cpp.clicked.connect(self._browse_cpp)
         cf_lay.addWidget(btn_cpp, 0, 2)
         self._compile_btn = styled_btn("🔨 Compile", "blue")
-        self._compile_btn.clicked.connect(self._compile)
+        self._compile_btn.clicked.connect(self._toggle_compile)
         cf_lay.addWidget(self._compile_btn, 0, 3)
         self._pio_hint = QLabel("")
         self._pio_hint.setStyleSheet(f"color: {FGDIM}; font-size: 8pt;")
@@ -918,7 +923,7 @@ class FemtoClawApp(QMainWindow):
             'Or use "set tg_token <TOKEN>" and "set dc_token <TOKEN>"'
         )
         lbl_hint = QLabel(hint_txt)
-        lbl_hint.setStyleSheet(f"color: {FGDIM}; font-size: 8pt;")
+        lbl_hint.setStyleSheet(f"color: {FGDIM}; font-size: 10pt;")
         outer.addWidget(lbl_hint)
         outer.addStretch()
         return w
@@ -953,7 +958,7 @@ class FemtoClawApp(QMainWindow):
             "Channels:  Telegram long-poll  ·  Discord REST polling\n"
             "Flashing:  esptool (ESP32)  ·  picotool / UF2 drag-drop (Pico W)\n"
             "Shell  :   UART CLI — chat · config · tg/dc · heartbeat\n\n"
-            "FemtoClaw firmware uses ~32 KB RAM and ~120 KB flash.\n"
+            "FemtoClaw firmware uses ~64 KB RAM and ~1 MB flash.\n"
             "Compare: Go PicoClaw runtime uses ~10-20 MB RAM.\n\n"
             "Inspired by: github.com/sipeed/picoclaw  (Apache-2.0)\n\n"
         )
@@ -963,7 +968,7 @@ class FemtoClawApp(QMainWindow):
 
         note = QLabel("NOTE: This project is not affiliated with Sipeed.")
         note.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        note.setStyleSheet(f"color: {FGDIM}; font-size: 8pt;")
+        note.setStyleSheet(f"color: {FGDIM}; font-size: 10pt;")
         vbox.addWidget(note)
         return w
 
@@ -974,6 +979,15 @@ class FemtoClawApp(QMainWindow):
         if not HAS_SERIAL:
             return
         ports = list(serial.tools.list_ports.comports())
+
+        # ── USB-unplug detection ─────────────────────────────────────────────
+        if self._connected and self._connected_port:
+            live_devices = [p.device for p in ports]
+            if self._connected_port not in live_devices:
+                self._disconnect()
+                self._tw(f"\n[⚠ Device {self._connected_port} disconnected — USB cable unplugged]\n", "warn")
+                self._flog_w(f"⚠ Port {self._connected_port} disappeared — disconnected.\n", "warn")
+
         # Update combobox
         current = self._port_cb.currentText()
         self._port_cb.blockSignals(True)
@@ -1031,6 +1045,7 @@ class FemtoClawApp(QMainWindow):
             self._ser.dtr = False  # explicitly de-assert DTR after open
             self._ser.rts = False  # explicitly de-assert RTS after open
             self._connected = True
+            self._connected_port = port
             self._conn_btn.setText("Disconnect")
             self._conn_btn.setStyleSheet(BTN_STYLE["red"])
             self._stlbl.setText(f"● {port}")
@@ -1052,6 +1067,7 @@ class FemtoClawApp(QMainWindow):
             self._ser.close()
         self._ser = None
         self._connected = False
+        self._connected_port = ""
         self._conn_btn.setText("Connect")
         self._conn_btn.setStyleSheet(BTN_STYLE["green"])
         self._stlbl.setText("● Disconnected")
@@ -1310,6 +1326,25 @@ class FemtoClawApp(QMainWindow):
             self._flash_prog_thread(0, "✗ esptool not found")
 
     # ── Compile ───────────────────────────────────────────────────────────────
+    def _toggle_compile(self):
+        """Compile button handler"""
+        if self._compiling:
+            # Cancel requested
+            self._cancel_compile = True
+            if self._compile_proc and self._compile_proc.poll() is None:
+                self._compile_proc.kill()
+            self._flog_w("\n[Compile cancelled]\n", "warn")
+        else:
+            self._compile()
+
+    def _set_compile_btn(self, compiling: bool):
+        if compiling:
+            self._compile_btn.setText("❌ Cancel")
+            self._compile_btn.setStyleSheet(BTN_STYLE["red"])
+        else:
+            self._compile_btn.setText("🔨 Compile")
+            self._compile_btn.setStyleSheet(BTN_STYLE["blue"])
+
     def _compile(self):
         if self._compiling or self._flashing:
             QMessageBox.information(self, "Busy", "Already compiling or flashing."); return
@@ -1327,10 +1362,6 @@ class FemtoClawApp(QMainWindow):
         env = env_map.get(board, "esp32")
 
         # Determine project root:
-        """ 
-        If the source file is inside a folder named "src", 
-        use the parent as the project root so platformio.ini lands in the right place. 
-        """
         file_dir = os.path.dirname(cpp)
         if os.path.basename(file_dir).lower() == "src":
             proj_dir = os.path.dirname(file_dir)
@@ -1470,6 +1501,8 @@ class FemtoClawApp(QMainWindow):
 
     def _do_compile(self, pio: str, proj_dir: str, env: str, board: str):
         self._compiling = True
+        self._cancel_compile = False
+        self._csig.compile_btn_state.emit(True)   # → show "❌ Cancel"
         self._csig.progress_show.emit(True, "⏳ Compiling…")
         self._log_thread(f"\n──── Compiling for {board} (env:{env}) ────\n", "info")
         self._log_thread(f"$ pio run -e {env} --project-dir \"{proj_dir}\"\n", "dim")
@@ -1482,7 +1515,11 @@ class FemtoClawApp(QMainWindow):
                 [pio, "run", "-e", env, "--project-dir", proj_dir],
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1)
+            self._compile_proc = p
             for line in p.stdout:
+                if self._cancel_compile:
+                    p.kill()
+                    break
                 line = line.rstrip()
                 ll = line.lower()
                 tag = "dim"
@@ -1492,7 +1529,9 @@ class FemtoClawApp(QMainWindow):
                 elif "compiling" in ll or "linking" in ll: tag = "info"
                 self._log_thread(line + "\n", tag)
             p.wait()
-            if p.returncode == 0:
+            if self._cancel_compile:
+                self._csig.progress_show.emit(False, "⚠ Compile cancelled")
+            elif p.returncode == 0:
                 fw = self._find_build_output(proj_dir, env, board)
                 if fw:
                     QTimer.singleShot(0, lambda f=fw: self._auto_fill_fw(f))
@@ -1513,7 +1552,9 @@ class FemtoClawApp(QMainWindow):
             self._csig.progress_show.emit(True, f"✗ Exception: {e}")
         finally:
             self._compiling = False
-            # status label keeps last message; bar hides via signal
+            self._cancel_compile = False
+            self._compile_proc = None
+            self._csig.compile_btn_state.emit(False)   # → restore "Compile"
 
     def _auto_fill_fw(self, fw: str):
         self._fw_path = fw
