@@ -7,6 +7,7 @@ FemtoClaw MCU Terminal
   • Lets you pick a port, load a firmware .bin / .uf2, and flash it.
   • Opens UART terminal.
   • Config tab covers WiFi, LLM provider, Telegram bot, Discord bot
+  • Control tab covers Board Hardware Controlling using .md file
 
 Install:  pip install pyserial esptool platformio PyQt6
 Run    :  python femtoclaw.py
@@ -14,7 +15,7 @@ Developed by : Al Mahmud Samiul
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
-import sys, os, threading, time, subprocess, shutil, json, re, sysconfig
+import sys, os, threading, time, subprocess, shutil, json, re, sysconfig, base64
 
 from PyQt6.QtCore import (Qt, QThread, pyqtSignal, QTimer, QObject, pyqtSlot)
 from PyQt6.QtGui import (QColor, QFont, QTextCursor, QTextCharFormat,
@@ -115,7 +116,7 @@ def find_esptool() -> str | None:
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 APP  = "FemtoClaw MCU Terminal"
-VER  = "1.0.0"
+VER  = "1.1.0"
 BAUDS = [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600]
 BAUD0 = 115200
 
@@ -146,7 +147,7 @@ WELCOME = r"""
   ██╔══╝  ██╔══╝  ██║╚██╔╝██║   ██║   ██║   ██║██║     ██║     ██╔══██║██║███╗██║
   ██║     ███████╗██║ ╚═╝ ██║   ██║   ╚██████╔╝╚██████╗███████╗██║  ██║╚███╔███╔╝
   ╚═╝     ╚══════╝╚═╝     ╚═╝   ╚═╝    ╚═════╝  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝
-  FemtoClaw — MCU AI Agent with Telegram & Discord · amsamiul.dev@gmail.com
+  FemtoClaw — MCU AI Assistant with Telegram & Discord · amsamiul.dev@gmail.com
   ─────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -329,6 +330,9 @@ BTN_STYLE = {
     "tg":    f"QPushButton{{ background:#229ED9; color:white; {_BTN_BASE} }}"
              f"QPushButton:hover{{ background:#32B0E9; }}"
              f"QPushButton:pressed{{ background:#1882B9; }}",
+    "orange":f"QPushButton{{ background:#9a6700; color:white; {_BTN_BASE} }}"
+             f"QPushButton:hover{{ background:#b07800; }}"
+             f"QPushButton:pressed{{ background:#7a5200; }}",
     "dc":    f"QPushButton{{ background:#5865F2; color:white; {_BTN_BASE} }}"
              f"QPushButton:hover{{ background:#6875F5; }}"
              f"QPushButton:pressed{{ background:#4752C4; }}",
@@ -354,6 +358,9 @@ TAG_COLORS = {
     "tool":   ORANGE,
     "tg":     "#229ED9",
     "dc":     "#5865F2",
+    "board":  "#7ee787",
+    "action": "#f0883e",
+    "result": "#bc8cff",
 }
 
 
@@ -366,6 +373,12 @@ class CompileSignals(QObject):
     progress_show  = pyqtSignal(bool, str)
     progress_pct   = pyqtSignal(int, str)
     compile_btn_state = pyqtSignal(bool)   # True = compiling, False = idle
+
+class BoardPushSignals(QObject):
+    """Thread-safe signals for the board-push background thread."""
+    progress = pyqtSignal(int)       # 0-100
+    status   = pyqtSignal(str, str)  # (text, colour-tag)
+    done     = pyqtSignal(bool, str) # (success, final_status_text)
 
 class SerialReader(QThread):
     def __init__(self, ser):
@@ -382,7 +395,7 @@ class SerialReader(QThread):
                     buf += self._ser.read(self._ser.in_waiting)
                     while b"\n" in buf:
                         line, buf = buf.split(b"\n", 1)
-                        text = line.decode("utf-8", "replace").rstrip("\r")
+                        text = line.decode("utf-8", "replace").rstrip("\r").replace("\x00", "")
                         self.signals.line_received.emit(text)
                 else:
                     time.sleep(0.02)
@@ -441,6 +454,13 @@ class FemtoClawApp(QMainWindow):
         self._history: list[str] = []
         self._hidx = -1
 
+        # Board config state
+        self._board_md_path: str = ""
+        self._board_push_thread: threading.Thread | None = None
+        self._board_pushing: bool = False
+        # Live pin states: {pin_num: 0|1} updated by Sync
+        self._board_pin_states: dict[int, int] = {}
+
 
         self._cfg = {
             "wifi_ssid": "", "wifi_pass": "",
@@ -460,7 +480,15 @@ class FemtoClawApp(QMainWindow):
         self._csig.progress_pct.connect(self._show_flash_prog)
         self._csig.compile_btn_state.connect(self._set_compile_btn)
 
+        # Board-push progress signals (connected after _build_ui creates the widgets)
+        self._bpsig = BoardPushSignals()
+
         self._build_ui()
+        # Wire board-push signals now that the widgets exist
+        self._bpsig.progress.connect(self._board_prog.setValue)
+        self._bpsig.status.connect(
+            lambda txt, tag: (self._board_status_lbl.setText(txt), self._tw(txt, tag)))
+        self._bpsig.done.connect(self._on_board_push_done)
         self._refresh_ports()
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._refresh_ports)
@@ -521,6 +549,7 @@ class FemtoClawApp(QMainWindow):
         self._tabs.addTab(self._mk_term_tab(),     "  🖥  Terminal  ")
         self._tabs.addTab(self._mk_llm_tab(),      "  ⚙️  LLM & WiFi  ")
         self._tabs.addTab(self._mk_channels_tab(), "  💬  Channels  ")
+        self._tabs.addTab(self._mk_board_tab(),    "  🔌  Control  ")
         self._tabs.addTab(self._mk_about_tab(),    "  ℹ  About  ")
 
     # ═══════════════════════════════════════════════════════════════════════════
@@ -928,8 +957,411 @@ class FemtoClawApp(QMainWindow):
         outer.addStretch()
         return w
 
+
     # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 5 — About
+    # TAB 5 — Control
+    # ═══════════════════════════════════════════════════════════════════════════
+    def _mk_board_tab(self) -> QWidget:
+        w = QWidget()
+        outer = QVBoxLayout(w)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(6)
+
+        # ── Top toolbar ───────────────────────────────────────────────────────
+        tb = QHBoxLayout()
+        tb.setSpacing(6)
+
+        btn_load = QPushButton("📂 Load .md file")
+        btn_load.clicked.connect(self._board_load_file)
+        tb.addWidget(btn_load)
+
+        btn_save = QPushButton("💾 Save")
+        btn_save.clicked.connect(self._board_save_file)
+        tb.addWidget(btn_save)
+
+        tb.addSpacing(10)
+
+        self._board_push_btn = styled_btn("📤 Push to Board", "blue")
+        self._board_push_btn.clicked.connect(self._board_push)
+        tb.addWidget(self._board_push_btn)
+
+        btn_show = styled_btn("🔍 Board Show", "green")
+        btn_show.clicked.connect(lambda: self._send_cmds(["board show"]))
+        tb.addWidget(btn_show)
+
+        btn_reset = styled_btn("🗑 Board Reset", "red")
+        btn_reset.clicked.connect(self._board_reset)
+        tb.addWidget(btn_reset)
+
+        tb.addSpacing(10)
+
+        btn_sync = styled_btn("🔄 Sync Pins", "orange")
+        btn_sync.setToolTip("Read live GPIO states from board")
+        btn_sync.clicked.connect(self._board_sync)
+        tb.addWidget(btn_sync)
+
+        tb.addStretch()
+
+        self._board_status_lbl = QLabel("")
+        self._board_status_lbl.setStyleSheet(f"color: {FGDIM}; font-size: 9pt;")
+        tb.addWidget(self._board_status_lbl)
+
+        outer.addLayout(tb)
+
+        # ── Push progress bar (hidden until push starts) ──────────────────────
+        self._board_prog = QProgressBar()
+        self._board_prog.setRange(0, 100)
+        self._board_prog.setFixedHeight(6)
+        self._board_prog.setVisible(False)
+        self._board_prog.setStyleSheet(
+            f"QProgressBar{{ background:{BGINP}; border:1px solid #30363d; border-radius:3px; }}"
+            f"QProgressBar::chunk{{ background:{GREEN}; border-radius:3px; }}")
+        outer.addWidget(self._board_prog)
+
+        # ── Main splitter: editor (top) / pin preview (bottom) ────────────────
+        splitter = QSplitter(Qt.Orientation.Vertical)
+
+        # ── Markdown editor ───────────────────────────────────────────────────
+        ed_frame = QGroupBox("  CONTROL.md  ")
+        ed_lay = QVBoxLayout(ed_frame)
+        ed_lay.setContentsMargins(6, 14, 6, 6)
+
+        self._board_editor = QPlainTextEdit()
+        self._board_editor.setFont(QFont(MONO_FONT, 10))
+        self._board_editor.setStyleSheet(
+            f"background: {BGINP}; color: {FG}; border: none; "
+            f"font-family: \"{MONO_FONT}\", monospace;")
+        self._board_editor.setPlaceholderText(
+            "# My Board\n"
+            "Board: [Board_Name]\n\n"
+            "## GPIO Pins\n\n"
+            "| Pin | Mode         | Name    | Logic    | Description                   |\n"
+            "|-----|--------------|---------|----------|-------------------------------|\n"
+            "| 2   | OUTPUT       | led     |  normal  | Onboard LED, High=on, LOW=off |\n"
+            "| 9   | INPUT_PULLUP | btn     |  normal  | Boot button LOW=pressed       |\n"
+        )
+        self._board_editor.textChanged.connect(self._board_editor_changed)
+        ed_lay.addWidget(self._board_editor)
+
+        splitter.addWidget(ed_frame)
+
+        # ── Pin preview table ─────────────────────────────────────────────────
+        pv_frame = QGroupBox("  Pin Preview  ")
+        pv_lay = QVBoxLayout(pv_frame)
+        pv_lay.setContentsMargins(6, 14, 6, 6)
+
+        pv_hdr = QHBoxLayout()
+        pv_lbl = QLabel("Parsed from editor: click 🔄 Sync to read live states from board")
+        pv_lbl.setStyleSheet(f"color: {FGDIM}; font-size: 10pt;")
+        pv_hdr.addWidget(pv_lbl)
+        pv_hdr.addStretch()
+        btn_preview = QPushButton("⟳ Refresh Preview")
+        btn_preview.setFixedHeight(24)
+        btn_preview.setStyleSheet(f"font-size: 8pt; padding: 2px 8px;")
+        btn_preview.clicked.connect(self._board_refresh_preview)
+        pv_hdr.addWidget(btn_preview)
+        pv_lay.addLayout(pv_hdr)
+
+        self._board_tree = QTreeWidget()
+        self._board_tree.setHeaderLabels(
+            ["●", "Type", "Pin", "Mode", "Logic", "Name", "Description", "State"])
+        self._board_tree.setColumnWidth(0, 20)
+        self._board_tree.setColumnWidth(1, 50)
+        self._board_tree.setColumnWidth(2, 40)
+        self._board_tree.setColumnWidth(3, 110)
+        self._board_tree.setColumnWidth(4, 70)
+        self._board_tree.setColumnWidth(5, 110)
+        self._board_tree.setColumnWidth(6, 220)
+        self._board_tree.setColumnWidth(7, 70)
+        self._board_tree.setAlternatingRowColors(True)
+        self._board_tree.setMaximumHeight(200)
+        pv_lay.addWidget(self._board_tree)
+
+        splitter.addWidget(pv_frame)
+        splitter.setSizes([420, 220])
+        outer.addWidget(splitter, 1)
+
+        # ── Hint bar ──────────────────────────────────────────────────────────
+        hint = QLabel(
+            "💡  Write [CONTROL].md in the editor  →  📤 Push to Board  →  Board parses & configures hardware  →  AI uses pin names automatically"
+        )
+        hint.setStyleSheet(f"color: {FGDIM}; font-size: 9pt; padding: 2px 0;")
+        hint.setWordWrap(True)
+        outer.addWidget(hint)
+
+        return w
+
+    # ── Board tab helpers ──────────────────────────────────────────────────────
+
+    def _board_editor_changed(self):
+        """Live-preview as user types — refresh the pin table."""
+        self._board_refresh_preview()
+
+    def _board_load_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load CONTROL.md", self._board_md_path or "",
+            "Markdown (*.md);;All Files (*.*)")
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                self._board_editor.setPlainText(content)
+                self._board_md_path = path
+                self._board_status_lbl.setText(f"Loaded: {os.path.basename(path)}")
+            except Exception as e:
+                QMessageBox.critical(self, "Load failed", str(e))
+
+    def _board_save_file(self):
+        path = self._board_md_path
+        if not path:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save CONTROL.md", "CONTROL.md",
+                "Markdown (*.md);;All Files (*.*)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self._board_editor.toPlainText())
+            self._board_md_path = path
+            self._board_status_lbl.setText(f"Saved: {os.path.basename(path)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
+
+    def _on_board_push_done(self, success: bool, msg: str):
+        """Main-thread slot: tidy up after a board push (success or failure)."""
+        self._board_push_btn.setEnabled(True)
+        self._board_push_btn.setText("📤 Push to Board")
+        self._board_status_lbl.setText(msg)
+        if success:
+            self._board_prog.setValue(100)
+        QTimer.singleShot(2000, lambda: self._board_prog.setVisible(False))
+
+    def _board_push(self):
+        if not self._connected or not self._ser:
+            QMessageBox.warning(self, "Not connected",
+                "Connect to the board first (Flash tab).")
+            return
+        if self._board_pushing:
+            return
+        md = self._board_editor.toPlainText().strip()
+        if not md:
+            QMessageBox.warning(self, "Empty", "Write a [CONTROl].md first.")
+            return
+        self._board_push_btn.setEnabled(False)
+        self._board_push_btn.setText("Pushing…")
+        self._board_prog.setValue(0)
+        self._board_prog.setVisible(True)
+        self._board_status_lbl.setText("Pushing…")
+        self._board_pushing = True
+
+        sig = self._bpsig   # capture before entering thread
+
+        def _run():
+            try:
+                b64 = base64.b64encode(md.encode("utf-8")).decode()
+                total_chunks = (len(b64) + 199) // 200
+                self._ser.write(b"board push begin\r\n")
+                time.sleep(0.08)
+                for ci, i in enumerate(range(0, len(b64), 200)):
+                    chunk = b64[i:i+200]
+                    self._ser.write(f"board push chunk {chunk}\r\n".encode())
+                    time.sleep(0.05)
+                    pct = int((ci + 1) / total_chunks * 90)
+                    sig.progress.emit(pct)                        # ← signal, not QTimer
+                time.sleep(0.05)
+                self._ser.write(b"board push end\r\n")
+                time.sleep(0.15)
+                ok_msg = f"✓ Pushed {len(md)} bytes ({total_chunks} chunks)"
+                sig.status.emit(
+                    f"[Board] CONTROL.md pushed ({len(md)} chars, {total_chunks} chunks)\n",
+                    "board")
+                sig.done.emit(True, ok_msg)
+            except Exception as e:
+                sig.status.emit(f"[Board] Push failed: {e}\n", "err")
+                sig.done.emit(False, f"✗ Push failed: {e}")
+            finally:
+                self._board_pushing = False
+
+        self._board_push_thread = threading.Thread(target=_run, daemon=True)
+        self._board_push_thread.start()
+
+    def _board_reset(self):
+        if QMessageBox.question(
+            self, "Board Reset",
+            "This will drive ALL output pins LOW and clear the stored [CONTROL].md.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        ) == QMessageBox.StandardButton.Yes:
+            self._send_cmds(["board reset"])
+            self._board_pin_states.clear()
+            self._board_refresh_preview()
+
+    def _board_sync(self):
+        """Send gpio get <pin> for every OUTPUT pin, read states from terminal."""
+        if not self._connected or not self._ser:
+            QMessageBox.warning(self, "Not connected", "Connect to board first.")
+            return
+        pins = self._board_parse_gpio_pins()
+        if not pins:
+            QMessageBox.information(self, "No pins", "No GPIO pins found in the editor.")
+            return
+        cmds = []
+        for pin_num, mode, name, _ in pins:
+            cmds.append(f"gpio get {pin_num}")
+        self._send_cmds(cmds)
+        self._board_status_lbl.setText("Sync sent — check Terminal for live values")
+
+    # ── Control markdown parser (local, for preview only) ───────────────────────
+
+    def _board_parse_gpio_pins(self) -> list[tuple]:
+        """
+        Parse ## GPIO Pins table from the editor.
+        Returns list of (pin_num, mode, name,logic, desc).
+        """
+        md = self._board_editor.toPlainText()
+        pins = []
+        in_gpio = False
+        header_done = False
+        sep_done = False
+        for line in md.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## GPIO") or stripped.startswith("## GPIO Pins"):
+                in_gpio = True; header_done = False; sep_done = False; continue
+            if stripped.startswith("## ") and in_gpio:
+                in_gpio = False; continue
+            if not in_gpio or not stripped.startswith("|"):
+                continue
+            # Detect separator row
+            inner = stripped.strip("|").strip()
+            if all(c in "-|: " for c in inner):
+                sep_done = True; continue
+            if not header_done:
+                header_done = True; continue
+            if not sep_done:
+                continue
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if len(cells) >= 3:
+                try:
+                    pin_num = int(cells[0])
+                    mode = cells[1].strip()
+                    name = cells[2].strip()
+                    logic = cells[3].strip() if len(cells) > 3 else ""  # ← NEW
+                    desc = cells[4].strip() if len(cells) > 4 else ""  # ← shifted
+                    pins.append((pin_num, mode, name, logic, desc))  # ← add logic
+                except ValueError:
+                    pass
+        return pins
+
+    def _board_parse_serial_ports(self) -> list[tuple]:
+        """
+        Parse ## Serial Ports table from editor.
+        Returns list of (port, baud, rx, tx, name, desc).
+        """
+        md = self._board_editor.toPlainText()
+        serials = []
+        in_sec = False; header_done = False; sep_done = False
+        for line in md.splitlines():
+            s = line.strip()
+            if s.startswith("## Serial"):
+                in_sec = True; header_done = False; sep_done = False; continue
+            if s.startswith("## ") and in_sec:
+                in_sec = False; continue
+            if not in_sec or not s.startswith("|"): continue
+            inner = s.strip("|").strip()
+            if all(c in "-|: " for c in inner):
+                sep_done = True; continue
+            if not header_done:
+                header_done = True; continue
+            if not sep_done: continue
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) >= 5:
+                try:
+                    serials.append((cells[0], int(cells[1]), int(cells[2]),
+                                    int(cells[3]), cells[4],
+                                    cells[5] if len(cells) > 5 else ""))
+                except ValueError:
+                    pass
+        return serials
+
+    def _board_parse_adc_pins(self) -> list[tuple]:
+        """
+        Parse ## ADC Pins table from editor.
+        Returns list of (pin_num, name, desc).
+        """
+        md = self._board_editor.toPlainText()
+        adcs = []
+        in_sec = False; header_done = False; sep_done = False
+        for line in md.splitlines():
+            s = line.strip()
+            if s.startswith("## ADC"):
+                in_sec = True; header_done = False; sep_done = False; continue
+            if s.startswith("## ") and in_sec:
+                in_sec = False; continue
+            if not in_sec or not s.startswith("|"): continue
+            inner = s.strip("|").strip()
+            if all(c in "-|: " for c in inner):
+                sep_done = True; continue
+            if not header_done:
+                header_done = True; continue
+            if not sep_done: continue
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            if len(cells) >= 2:
+                try:
+                    adcs.append((int(cells[0]), cells[1],
+                                 cells[2] if len(cells) > 2 else ""))
+                except ValueError:
+                    pass
+        return adcs
+
+    def _board_refresh_preview(self):
+        """Rebuild the pin preview tree from the editor's current content."""
+        self._board_tree.clear()
+        gpio_pins  = self._board_parse_gpio_pins()
+        serial_ports = self._board_parse_serial_ports()
+        adc_pins   = self._board_parse_adc_pins()
+
+        MODE_COLOUR = {
+            "OUTPUT":         GREEN,
+            "INPUT":          BLUE,
+            "INPUT_PULLUP":   YELLOW,
+            "INPUT_PULLDOWN": ORANGE,
+        }
+
+        for pin_num, mode, name, logic, desc in gpio_pins:
+            state = self._board_pin_states.get(pin_num, None)
+            dot_color = GREEN if state == 1 else (FGDIM if state is None else RED)
+            state_txt = ("HIGH" if state == 1 else "LOW" if state == 0 else "—")
+            logic_txt = "inverted" if logic.lower() == "inverted" else "normal"
+            item = QTreeWidgetItem(["●", "GPIO", str(pin_num), mode, logic_txt, name, desc, state_txt])
+            item.setForeground(0, QColor(dot_color))
+            item.setForeground(3, QColor(MODE_COLOUR.get(mode, FG)))
+            item.setForeground(4, QColor(ORANGE if logic_txt == "inverted" else FGDIM))  # ← highlight inverted
+            item.setForeground(7, QColor(GREEN if state == 1 else
+                                         (RED if state == 0 else FGDIM)))
+            self._board_tree.addTopLevelItem(item)
+
+        for port, baud, rx, tx, name, desc in serial_ports:
+            item = QTreeWidgetItem(["●", "UART", port, f"{baud} baud",
+                                    name, desc, f"RX={rx} TX={tx}"])
+            item.setForeground(0, QColor(PURPLE))
+            item.setForeground(1, QColor(PURPLE))
+            self._board_tree.addTopLevelItem(item)
+
+        for pin_num, name, desc in adc_pins:
+            item = QTreeWidgetItem(["●", "ADC", str(pin_num), "ANALOG",
+                                    name, desc, "—"])
+            item.setForeground(0, QColor(ORANGE))
+            item.setForeground(3, QColor(ORANGE))
+            self._board_tree.addTopLevelItem(item)
+
+        total = len(gpio_pins) + len(serial_ports) + len(adc_pins)
+        if total == 0:
+            self._board_status_lbl.setText("No pins found: Check ## GPIO Pins / ## ADC Pins / ## Serial Ports sections")
+        else:
+            self._board_status_lbl.setText(
+                f"{len(gpio_pins)} GPIO  ·  {len(serial_ports)} UART  ·  {len(adc_pins)} ADC")
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 6 — About
     # ═══════════════════════════════════════════════════════════════════════════
     def _mk_about_tab(self) -> QWidget:
         w = QWidget()
@@ -954,11 +1386,11 @@ class FemtoClawApp(QMainWindow):
         vbox.addWidget(ver)
 
         about = (
-            "MCU port of PicoClaw — flash and interact with MCU boards.\n\n"
+            "MCU port of PicoClaw : flash and interact with MCU boards.\n\n"
             "Channels:  Telegram long-poll  ·  Discord REST polling\n"
             "Flashing:  esptool (ESP32)  ·  picotool / UF2 drag-drop (Pico W)\n"
-            "Shell  :   UART CLI — chat · config · tg/dc · heartbeat\n\n"
-            "FemtoClaw firmware uses ~64 KB RAM and ~1 MB flash.\n"
+            "Shell  :   UART CLI —> chat · config · tg/dc · heartbeat\n\n"
+            "FemtoClaw firmware uses ~46 KB RAM and ~1 MB flash.\n"
             "Compare: Go PicoClaw runtime uses ~10-20 MB RAM.\n\n"
             "Inspired by: github.com/sipeed/picoclaw  (Apache-2.0)\n\n"
         )
@@ -1079,14 +1511,17 @@ class FemtoClawApp(QMainWindow):
     def _rx(self, line: str):
         c = strip_ansi(line)
         tag = "dim"
-        if "[femtoclaw]" in c:    tag = "agent"
-        elif "[tool:" in c:       tag = "tool"
-        elif "[Telegram]" in c:   tag = "tg"
-        elif "[Discord]" in c:    tag = "dc"
-        elif "[WiFi]" in c:       tag = "info"
-        elif "[heartbeat]" in c:  tag = "warn"
+        if "[femtoclaw]" in c:        tag = "agent"
+        elif "[tool:" in c:           tag = "tool"
+        elif "[Telegram]" in c:       tag = "tg"
+        elif "[Discord]" in c:        tag = "dc"
+        elif "[WiFi]" in c:           tag = "info"
+        elif "[heartbeat]" in c:      tag = "warn"
+        elif "[Board]" in c:          tag = "board"
+        elif "[Action]" in c:         tag = "action"
+        elif "[RESULT:" in c:         tag = "result"
         elif "[!" in c or "error" in c.lower(): tag = "err"
-        elif "femtoclaw>" in c:   tag = "prompt"
+        elif "femtoclaw>" in c:       tag = "prompt"
         elif "connected" in c.lower() or "✓" in c: tag = "ok"
         self._tw(c + "\n", tag)
 
@@ -1448,6 +1883,16 @@ class FemtoClawApp(QMainWindow):
 
     def _set_compile_prog(self, visible: bool, status: str = ""):
         """Main-thread helper: show/hide compile progress bar and set status text."""
+        is_error = "x" in status or "failed" in status.lower() or "cancelled" in status.lower()
+
+        if visible and is_error:
+            self._compile_prog.setRange(0, 1)
+            self._compile_prog.setValue(0)
+        elif visible:
+            self._compile_prog.setRange(0, 0)
+        else:
+            self._compile_prog.setRange(0, 0)
+
         self._compile_prog.setVisible(visible)
         self._compile_status.setText(status)
         self._compile_status.setStyleSheet(
@@ -1732,7 +2177,7 @@ class FemtoClawApp(QMainWindow):
 # ── Entry point ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     if not HAS_SERIAL:
-        print("pyserial not found — run:  pip install pyserial esptool")
+        print("pyserial not found! run:  pip install pyserial esptool")
         print("Continuing with limited functionality...\n")
     app = QApplication(sys.argv)
     app.setStyleSheet(STYLE)
