@@ -53,9 +53,27 @@ pip install esptool            # Flash ESP32 boards
 
 <https://github.com/user-attachments/assets/e881f5f5-d829-4c6f-b895-254bb5adc508>
 
-### Telegram Demo
-[![Telegram demo](assets/telegram_demo.png)](https://youtube.com/shorts/vIlKrQSQUu8?feature=share)
+<table align="center">
+  <tr align="center">
+    <th><p align="center">Telegram Demo</p></th>
+    <th><p align="center">Hardware Skill Demo</p></th>
+  </tr>
 
+  <tr>
+    <td align="center">
+      <p align="center">
+        <a href="https://youtube.com/shorts/vIlKrQSQUu8?feature=share">
+          <img src="assets/telegram_demo.png" width="480" height="260">
+        </a>
+      </p>
+    </td>
+    <td align="center">
+      <p align="center">
+        <img src="assets/femtoclaw_hardware_control_demo.gif" width="480" height="260">
+      </p>
+    </td>
+  </tr>
+</table>
 ---
 
 ## Quick Start
@@ -76,7 +94,7 @@ The GUI launches and auto-detects all USB serial devices.
 
 ---
 
-## GUI Overview — 5 Tabs
+## GUI Overview : 6 Tabs
 
 <table align="center">
   <tr align="center">
@@ -91,7 +109,15 @@ The GUI launches and auto-detects all USB serial devices.
     <td align="center"><p align="center"><img src="assets/llm_&_wifi_tab.png" width="480" height="260"></p></td>
     <td align="center"><p align="center"><img src="assets/channels_tab.png" width="480" height="260"></p></td>
   </tr>
-
+  
+  <tr align="center">
+    <th><p align="center">🔌Control Tab</p></th>
+  </tr>
+  <tr align="center">
+    <td>
+      <p align="center"><img src="assets/control_tab.png" width="480" height="260"></p> 
+    </td>
+  </tr>
 </table>
 
 ### ⚡ Flash Tab
@@ -235,6 +261,27 @@ dc token <TOKEN>    dc channel <CHAN_ID>  dc enable
 
 ---
 
+### 🔌 Control Tab
+
+Push a `.md` hardware config file to the board from a built-in markdown editor.
+
+**Features:**
+
+- Markdown editor with syntax highlighting
+- 📤 Push to Board : Encodes file as base64, sends in 200-char chunks over UART
+- Board parses markdown, initializes GPIO/UART/ADC/I2C/SPI/Servo/PWM, and injects the config into the LLM system prompt
+- GUI auto-detects hardware keywords (servo, oled, ili9341, st7789) and 
+  injects the correct build flags before compiling
+
+**What the board does after receiving a `.md` file:**
+
+1. Decodes base64 → stores in NVS / LittleFS
+2. Parses markdown tables → configures pins and peripherals
+3. On next chat message → injects board config into LLM system prompt
+4. LLM responds with [ACTION:...] tags → firmware executes them in real-time
+
+---
+
 ## End-to-End Workflow
 
 ```
@@ -253,6 +300,8 @@ dc token <TOKEN>    dc channel <CHAN_ID>  dc enable
 7.  LLM & WiFi tab → enter API key + model → 📤 Send to Board
 8.  Channels tab → enter bot tokens → 📤 Push All Channels to Board
 9.  femtoclaw> chat Hello, what can you do?
+10. (Optional) Control tab → write or paste your [CONTROL].md → 📤 Push to Board
+    femtoclaw> chat Turn on the LED
 ```
 
 ---
@@ -291,8 +340,8 @@ The **ESP32-C3 Super Mini** is fully supported and works perfectly:
 
 **Memory Budget:**
 
-- FemtoClaw uses ~64 KB RAM and ~1 MB flash
-- Super Mini has **6× RAM headroom** (400 KB available)
+- FemtoClaw uses ~46 KB RAM and ~1 MB flash
+- Super Mini has **8.7× RAM headroom** (400 KB available)
 - Super Mini has **4× flash headroom** (4 MB available)
 - Can run multiple agent instances with room to spare
 
@@ -434,6 +483,25 @@ femtoclaw> chat Hello, what can you do?  # Send message to LLM
 femtoclaw> reset session                 # Clear conversation history
 ```
 
+### Board & Hardware Commands
+
+```
+femtoclaw> board push begin              # Start a [CONTROL].md push
+femtoclaw> board push chunk <b64>        # Send a base64 chunk (200 chars max each)
+femtoclaw> board push end                # Finish push : decode, parse, init hardware
+femtoclaw> board show                    # Print stored board config
+femtoclaw> board reset                   # Clear config, drive all outputs LOW
+
+femtoclaw> gpio get <pin>                # Read GPIO pin (0 or 1, name or number)
+femtoclaw> gpio set <pin> <0|1>          # Set GPIO output (name or number)
+femtoclaw> gpio mode <pin> <mode>        # Change pin mode (INPUT/OUTPUT/INPUT_PULLUP)
+femtoclaw> adc read <pin>                # Read ADC (0–4095, name or number)
+femtoclaw> serial write <name> <data>    # Write to a named serial port
+femtoclaw> serial read <name>            # Read from a named serial port (150 ms timeout)
+femtoclaw> servo set <name> <angle>      # Set servo angle (clamped to declared range)
+femtoclaw> pwm set <name> <duty>         # Set PWM duty cycle (0–255)
+```
+
 ---
 
 ## Supported LLM Providers
@@ -447,6 +515,47 @@ femtoclaw> reset session                 # Clear conversation history
 | **Groq**       | `https://api.groq.com/openai/v1`       | Fast inference, free tier |
 | **Zhipu GLM**  | `https://open.bigmodel.cn/api/paas/v4` | GLM-4                     |
 | **Ollama**     | `http://localhost:11434/v1`            | Local models              |
+
+---
+
+## Hardware Control
+FemtoClaw supports markdown-driven hardware control. You write a plain-text `.md` file describing your board's peripherals, push it to the MCU, and the AI can control them by name in natural language.
+
+### Supported peripheral sections
+
+| Section           | What it configures                       | AI Actions available                               |
+|-------------------|------------------------------------------|----------------------------------------------------|
+| `## GPIO Pins`    | Digital input/output pins                | `gpio_set`, `gpio_get`                             |
+| `## ADC Pins`     | Analog input pins                        | `adc_read`                                         |
+| `## Serial Ports` | Hardware UART ports                      | `serial_write`, `serial_read`                      |
+| `## I2C Buses`    | I2C devices (sensors, OLEDs)             | `oled_print`, `oled_clear`, `i2c_write`,`i2c_read` |
+| `## SPI Buses`    | SPI devices (TFT displays)               | `tft_print`                                        |
+| `## Servos`       | Servo motors with optional smooth sweep  | `servo_set`                                        |
+| `## PWM Outputs`  | Variable-duty PWM (fans, pumps, dimmers) | `pwm_set`                                          |
+
+### Quick example
+
+```markdown
+# My Board
+Board: ESP32-C3 Super Mini
+
+## GPIO Pins
+
+| Pin | Mode   | Name  | Logic | Description      |
+|-----|--------|-------|-------|------------------|
+| 2   | OUTPUT | led   |       | Onboard LED      |
+| 5   | OUTPUT | relay | inverted | Relay, active-LOW |
+
+## ADC Pins
+
+| Pin | Name | Description               |
+|-----|------|---------------------------|
+| 0   | ldr  | Light sensor (0=dark)     |
+
+```
+After pushing this, you can say "Turn on the relay" or "What's the light level?" and the AI controls the hardware directly.
+See **[CONTROL.md](CONTROL.md)** for the complete format spec, all section types, platform restrictions, safety constraints, and worked examples.
+
 
 ---
 
@@ -516,20 +625,20 @@ Both behave identically from user perspective, only changed keys are updated.
   "llm_api_base": "https://openrouter.ai/api/v1",
   "llm_model": "openai/gpt-4o-mini",
   "max_tokens": 1024,
-  "temperature": 0.7,
-  "channels": {
-    "telegram": {
-      "enabled": true,
-      "token": "123456:ABC...",
-      "allow_from": ["123456789"]
-    },
-    "discord": {
-      "enabled": true,
-      "token": "YOUR_DISCORD_BOT_TOKEN",
-      "channel_id": "1234567890123456789",
-      "allow_from": []
-    }
-  }
+  "temperature": 0.70,
+  "max_tool_iters": 3,
+  "heartbeat_ms": 0,
+  "tg_enabled": true,
+  "tg_token": "123456:ABC...",
+  "tg_allow_count": 2,
+  "tg_allow": ["123456789", "987654321"],
+  "dc_enabled": true,
+  "dc_token": "YOUR_DISCORD_BOT_TOKEN",
+  "dc_channel_id": "1234567890123456789",
+  "dc_allow_count": 0,
+  "dc_allow": [],
+  "tg_offset": 0,
+  "dc_last_id": ""
 }
 ```
 
@@ -546,7 +655,7 @@ Both behave identically from user perspective, only changed keys are updated.
 | **Compile**          | `go build`                      | PlatformIO — auto-triggered from GUI         |
 | **Flash**            | Manual / CI                     | esptool / picotool — auto-triggered from GUI |
 | **GUI Framework**    | N/A                             | **PyQt6**                                    |
-| **Memory**           | 10–20 MB (Go runtime)           | **~64 KB RAM** (static buffers, no heap)     |
+| **Memory**           | 10–20 MB (Go runtime)           | **~46 KB RAM** (static buffers, no heap)     |
 | **Binary size**      | ~8 MB                           | **~1 MB flash**                              |
 | **JSON**             | `encoding/json`                 | Zero-alloc hand-rolled tokenizer             |
 | **Session history**  | `[]Message{}` heap slice        | Rolling 4 KB static ring buffer              |
@@ -574,6 +683,7 @@ Both behave identically from user perspective, only changed keys are updated.
 - **Telegram poll:** Every 2 seconds when enabled
 - **Discord poll:** Every 5 seconds when enabled
 - **Serial baud:** 115200 (configurable in platformio.ini)
+- **Hardware action latency:** <1 ms for GPIO/ADC; UART read hard-capped at 150 ms
 
 ---
 
@@ -648,6 +758,13 @@ The GUI auto-generates `platformio.ini` based on your board selection:
 
 If manual ini exists, ensure env name matches board selection.
 
+### "Board push fails / `.md` rejected"
+
+- Ensure the markdown uses `## GPIO Pins`, `## Serial Ports`, etc. (exact heading text)
+- Check the serial log for [Board] Parse line, it shows how many items were parsed
+- Partial or empty configs are rejected; at least one valid table row is required
+- On ESP32-C3: UART2 entries will log a warning and be skipped (only UART1 is available)
+
 ---
 
 ## Credits & License
@@ -662,6 +779,7 @@ If manual ini exists, ensure env name matches board selection.
 See the project repository for detailed guides:
 
 - **[CONFIG.md](CONFIG.md)** — Partial config updates explained
+- **[CONTROL.md](CONTROL.md)** : Hardware skill system (`.md` format, all section types, AI actions, examples)
 - **[LICENSE.md](LICENSE.md)** — Licensing information
 - **[TRADEMARK.md](TRADEMARK.md)** — Trademark condition explained
 
