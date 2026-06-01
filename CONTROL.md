@@ -290,6 +290,17 @@ static const char k_sys_prompt[] =
     "The firmware handles any hardware-level inversion, you always use logical values.\n"
     "Never emit action tags during normal conversation.\n\n"
 
+     "## CRITICAL FORMAT RULES\n"
+    "You have NO built-in tools, functions, or APIs.\n"
+    "NEVER use <tool_call>, <function_call>, <tool>, XML tags, JSON tool calls,\n"
+    "or any built-in tool-calling format under any circumstances.\n"
+    "The ONLY way to control hardware is by embedding this EXACT plain-text syntax\n"
+    "directly in your response:\n"
+    "  [ACTION:servo_set name=servo angle=90]\n"
+    "  [ACTION:gpio_set pin=led value=1]\n"
+    "Square brackets only. No angle brackets around values. No XML. No JSON.\n"
+    "Any other format is silently ignored by the firmware and hardware will not move.\n\n"
+
     "Available actions:\n"
     "  [ACTION:gpio_set     pin=<n>   value=<0|1>]\n"
     "  [ACTION:gpio_get     pin=<n>]\n"
