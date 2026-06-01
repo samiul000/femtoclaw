@@ -74,6 +74,7 @@ pip install esptool            # Flash ESP32 boards
     </td>
   </tr>
 </table>
+
 ---
 
 ## Quick Start
@@ -124,7 +125,7 @@ The GUI launches and auto-detects all USB serial devices.
 
 Complete compile → flash pipeline in two steps.
 
-**Step 1 — Compile Source**
+**Step 1 - Compile Source**
 
 | Control     | What it does                                                     |
 |-------------| ---------------------------------------------------------------- |
@@ -310,8 +311,8 @@ Push a `.md` hardware config file to the board from a built-in markdown editor.
 
 | Board                    | PlatformIO env | Flash format       | Notes                                        |
 | ------------------------ | -------------- | ------------------ | -------------------------------------------- |
-| **ESP32 (WROOM/WROVER)** | `esp32`        | `.bin` via esptool | Generic devkit, most common                  |
-| **ESP32-S3**             | `esp32s3`      | `.bin` via esptool | Dual-core Xtensa LX7                         |
+| **ESP32 (WROOM/WROVER)** | `esp32`        | `.bin` via esptool | Generic devkit, most common **(Recommended)** |
+| **ESP32-S3**             | `esp32s3`      | `.bin` via esptool | Dual-core Xtensa LX7 **✅ Tested & Verified** |
 | **ESP32-C3**             | `esp32c3`      | `.bin` via esptool | RISC-V single-core                           |
 | **ESP32-C3 Super Mini**  | `esp32c3`      | `.bin` via esptool | **✅ Tested & Verified** => tiny USB-C board |
 | **Raspberry Pi Pico W**  | `picow`        | `.uf2` drag-drop   | RP2040 + CYW43439 WiFi                       |
@@ -769,7 +770,7 @@ If manual ini exists, ensure env name matches board selection.
 
 ## Credits & License
 
-**Developed by:** Al Mahmud Samiul  
+**Developed by:** Al Mahmud Samiul
 **License:** Apache 2.0
 
 ---
@@ -788,6 +789,8 @@ See the project repository for detailed guides:
 ## Contributing
 
 Contributions welcome! Open issues or PRs on GitHub. Please read **[CONTRIBUTE.md](CONTRIBUTE.md)** before opening issues or pull requests.
+
+*****Note:** The project is presently supported and overseen by the Research & Innovation Centre (RIC), with continued research and development activities planned to enhance its future capabilities.***
 
 ---
 
