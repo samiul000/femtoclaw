@@ -440,7 +440,8 @@ static int execute_actions_in_response(const char *llm_response,
             board_parse_action_str(action_buf, "text", text,     sizeof(text));
             int x = board_parse_action_int(action_buf, "x");
             int y = board_parse_action_int(action_buf, "y");
-            if (x < 0) x = 0; if (y < 0) y = 0;
+            if (x < 0) x = 0; 
+            if (y < 0) y = 0;
             int bi = board_find_i2c_by_name(bus_name);
             if (bi < 0 || !s_oled_ok[bi]) {
                 snprintf(result, sizeof(result), "[RESULT:oled_print bus=%s error=not_found]\n", bus_name);
@@ -462,6 +463,14 @@ static int execute_actions_in_response(const char *llm_response,
             char bus_name[32];
             board_parse_action_str(action_buf, "bus", bus_name, sizeof(bus_name));
             int bi = board_find_i2c_by_name(bus_name);
+            
+            if (bi < 0){
+              char *end_ptr;
+              long idx = strtol(bus_name, &end_ptr, 10);
+              if (end_ptr != bus_name && idx >= 0 && idx < g_board_i2c_count)
+                bi = (int)idx;
+            }
+          
             if (bi < 0 || !s_oled_ok[bi]) {
                 snprintf(result, sizeof(result), "[RESULT:oled_clear bus=%s error=not_found]\n", bus_name);
             } else {
