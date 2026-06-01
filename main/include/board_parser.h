@@ -476,8 +476,16 @@ static bool board_parse_action_str(const char *buf, const char *key,
         ++p;
         while (*p && *p != '"' && n + 1 < cap) out[n++] = *p++;
     } else {
-        while (*p && *p != ' ' && *p != '\t' && n + 1 < cap) out[n++] = *p++;
+        // For 'text' and 'data' keys read until next key= or end
+        bool is_text = (strcmp(key, "text") == 0 || strcmp(key, "data") == 0);
+        while (*p && n + 1 < cap) {
+            if (!is_text && (*p == ' ' || *p == '\t')) break;
+            // Stop at next key= pattern for text fields
+            if (is_text && *p == ' ' && *(p+1) && strchr("xybr", *(p+1)) && *(p+2) == '=') break;
+            out[n++] = *p++;
+        }
     }
+    while (n > 0 && (out[n-1] == ' ' || out[n-1] == '\t')) --n;
     out[n] = '\0';
     return true;
 }
