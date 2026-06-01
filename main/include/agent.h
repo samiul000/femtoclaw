@@ -85,6 +85,9 @@ static const char *agent_run(const char *user_input) {
             g_llm_out, g_action_results, sizeof(g_action_results));
 
         strip_action_tags(g_llm_out);
+        // Strip <tool_call> artifacts before storing in session
+        char *tc_artifact = strstr(g_llm_out, "<tool_call>");
+        if (tc_artifact) *tc_artifact = '\0';
         session_append("assistant", g_llm_out);
 
         // ── Legacy <tool:...> built-in tool dispatch ──────────────────
